@@ -32,24 +32,6 @@ using_cli = False
 device = "cuda:0"
 is_half = False
 
-if len(sys.argv) > 0:
-    f0_up_key = int(sys.argv[1])  # transpose value
-    input_path = sys.argv[2]
-    output_path = sys.argv[3]
-    model_path = sys.argv[4]
-    file_index = sys.argv[5]  # .index file
-    device = sys.argv[6]
-    f0_method = sys.argv[7]  # pm or harvest or crepe
-
-    using_cli = True
-
-    # file_index2=sys.argv[8]
-    # index_rate=float(sys.argv[10]) #search feature ratio
-    # filter_radius=float(sys.argv[11]) #median filter
-    # resample_sr=float(sys.argv[12]) #resample audio in post processing
-    # rms_mix_rate=float(sys.argv[13]) #search feature
-    print(sys.argv)
-
 
 class Config:
     def __init__(self, device, is_half):
