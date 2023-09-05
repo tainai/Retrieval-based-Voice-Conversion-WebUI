@@ -163,11 +163,12 @@ def process_sqs_message(message):
             pitch=pitch
         )
         # 콜백
+        logger.info(f'success callback started: {callback_url}')
         httpx.post(callback_url, json={
             "result": "success",
             "request_id": request_id,
-            "data": encoded
-        })
+            "data": encoded.decode('utf8')
+        }, timeout=30.0)
         logger.info(f'success callback completed: {callback_url}')
     except HTTPException as e:
         httpx.post(callback_url, json={
