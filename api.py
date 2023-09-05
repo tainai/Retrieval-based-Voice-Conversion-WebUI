@@ -5,6 +5,10 @@ import base64
 import zipfile
 import urllib.request
 import logging
+import boto3
+import json
+import httpx
+import asyncio
 
 from fastapi import FastAPI, HTTPException
 from typing import Optional
@@ -32,15 +36,8 @@ def read_root():
     return {"ping": "pong"}
 
 
-class InferenceRequest(BaseModel):
-    model_url: str
-    input_url: str
-    pitch: Optional[int] = 0
-
-@app.post("/inference")
-def inference(request: InferenceRequest):
+def do_inference(model_url, input_url, pitch):
     # 모델 다운로드
-    model_url=request.model_url
     logger.info(f'model downloading: {model_url}')
     model_url_bytes=model_url.encode('ascii')
     model_url_base64_bytes = base64.b64encode(model_url_bytes)
@@ -75,7 +72,6 @@ def inference(request: InferenceRequest):
     logger.info(f'model index file found: {model_index_file}')
 
     # 오디오 다운로드
-    input_url=request.input_url
     input_file_id=uuid.uuid4()
     input_file=f'{input_dir}/{input_file_id}.wav'
     urllib.request.urlretrieve(input_url, input_file)
@@ -84,10 +80,11 @@ def inference(request: InferenceRequest):
     # 합성
     output_file_id=uuid.uuid4()
     output_file=f'{output_dir}/{output_file_id}.wav'
+    logger.info(f'inference started: {output_file}')
     vc_single(
         sid=0,
         input_audio_path=input_file,
-        f0_up_key=request.pitch,
+        f0_up_key=pitch,
         f0_file=None,
         f0_method="crepe",
         file_index=model_index_file,
@@ -95,8 +92,125 @@ def inference(request: InferenceRequest):
         output_path=output_file,
         model_path=model_pth_file,
     )
+    logger.info(f'inference completed: {output_file}')
 
     with open(output_file, 'rb') as f:
       contents = f.read()
-      encoded=base64.b64encode(contents)
-      return {"data": encoded}
+      return base64.b64encode(contents)
+
+class InferenceRequest(BaseModel):
+    model_url: str
+    input_url: str
+    pitch: Optional[int] = 0
+
+@app.post("/inference")
+def inference(request: InferenceRequest):
+    try:
+        encoded = do_inference(
+            model_url=request.model_url,
+            input_url=request.input_url,
+            pitch=request.pitch
+        )
+        return {"data": encoded}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'{e}')
+
+
+sqs = boto3.client('sqs', region_name='ap-northeast-2')
+
+queue_url = 'https://sqs.ap-northeast-2.amazonaws.com/075389491675/rvc-inference.fifo'
+
+class InferenceParams(BaseModel):
+    request_id: str
+    model_url: str
+    input_url: str
+    callback_url: str = ''
+    pitch: Optional[int] = 0
+
+@app.post("/inference/v2")
+def inference_v2(params: InferenceParams):
+    deduplication_id=uuid.uuid4()
+    response = sqs.send_message(
+        QueueUrl=queue_url,
+        MessageBody=json.dumps({
+            "request_id": params.request_id,
+            "model_url": params.model_url,
+            "input_url": params.input_url,
+            "callback_url": params.callback_url,
+            "pitch": params.pitch,
+        }),
+        MessageGroupId="inference_requests",
+        MessageDeduplicationId=str(deduplication_id)
+    )
+    logger.info(f'sqs message sent: {response["MessageId"]}')
+    return { "request_id": params.request_id }
+
+def process_sqs_message(message):
+    logger.info(f'sqs message received: {message["Body"]}')
+    try:
+        params=json.loads(message['Body'])
+        request_id=params["request_id"]
+        model_url=params["model_url"]
+        input_url=params["input_url"]
+        pitch=params["pitch"]
+        callback_url=params["callback_url"]
+
+        encoded = do_inference(
+            model_url=model_url,
+            input_url=input_url,
+            pitch=pitch
+        )
+        # 콜백
+        httpx.post(callback_url, json={
+            "result": "success",
+            "request_id": request_id,
+            "data": encoded
+        })
+        logger.info(f'success callback completed: {callback_url}')
+    except HTTPException as e:
+        httpx.post(callback_url, json={
+            "result": "failed",
+            "request_id": request_id,
+            "detail": e.detail
+        })
+        logger.info(f'failure callback completed: {callback_url}, {e.detail}')
+    except Exception as e:
+        httpx.post(callback_url, json={
+            "result": "failed",
+            "request_id": request_id,
+            "detail": f'{e}'
+        })
+        logger.info(f'failure callback completed: {callback_url}, {e}')
+    finally:
+        sqs.delete_message(
+            QueueUrl=queue_url,
+            ReceiptHandle=message['ReceiptHandle']
+        )
+        logger.info(f'sqs message deleted: {message["ReceiptHandle"]}')
+
+
+async def poll_sqs_messages():
+    while True:
+        response = sqs.receive_message(
+            QueueUrl=queue_url,
+            MaxNumberOfMessages=1,
+            WaitTimeSeconds=10
+        )
+        messages = response.get('Messages')
+        if messages:
+            for message in messages:
+                try:
+                    process_sqs_message(message)
+                except:
+                    pass
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(poll_sqs_messages())
+
+@app.post("/start_polling")
+async def start_polling():
+    asyncio.create_task(poll_sqs_messages())
+    return {"message": "Started polling SQS"}

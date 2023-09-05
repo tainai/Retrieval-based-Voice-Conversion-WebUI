@@ -25,6 +25,6 @@ RUN pip3 install -r requirements.txt
 # RUN aria2c --console-log-level=error -c -x 16 -s 16 -k 1M https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base.pt -o hubert_base.pt
 # RUN aria2c --console-log-level=error -c -x 16 -s 16 -k 1M https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt -o rmvpe.pt
 
-RUN pip3 install fastapi uvicorn urllib3
+RUN pip3 install fastapi uvicorn urllib3 boto3
 
 CMD uvicorn api:app --host 0.0.0.0 --port 7865
