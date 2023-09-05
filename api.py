@@ -8,7 +8,7 @@ import logging
 import boto3
 import json
 import httpx
-import asyncio
+import threading
 
 from fastapi import FastAPI, HTTPException
 from typing import Optional
@@ -191,13 +191,14 @@ def process_sqs_message(message):
         logger.info(f'sqs message deleted: {message["ReceiptHandle"]}')
 
 
-async def poll_sqs_messages():
+def poll_sqs_messages():
     while True:
         response = sqs.receive_message(
             QueueUrl=queue_url,
             MaxNumberOfMessages=1,
             WaitTimeSeconds=10
         )
+        logger.info(f'sqs message received')
         messages = response.get('Messages')
         if messages:
             for message in messages:
@@ -208,9 +209,5 @@ async def poll_sqs_messages():
 
 @app.on_event("startup")
 async def startup_event():
-    asyncio.create_task(poll_sqs_messages())
-
-@app.post("/start_polling")
-async def start_polling():
-    asyncio.create_task(poll_sqs_messages())
-    return {"message": "Started polling SQS"}
+    thread = threading.Thread(target=poll_sqs_messages, daemon=True)
+    thread.start()
