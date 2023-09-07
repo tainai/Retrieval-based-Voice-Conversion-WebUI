@@ -36,24 +36,33 @@ def read_root():
     return {"ping": "pong"}
 
 
-def do_inference(model_url, input_url, pitch):
+def do_inference(model_cache_id="", model_url="", input_url="", input_content="", pitch=0):
     # 모델 다운로드
-    logger.info(f'model downloading: {model_url}')
-    model_url_bytes=model_url.encode('ascii')
-    model_url_base64_bytes = base64.b64encode(model_url_bytes)
-    model_id = model_url_base64_bytes.decode("ascii")
-    logger.info(f'model id converted: {model_id}')
+    model_id=""
+    if model_cache_id:
+        model_id=model_cache_id
+        logger.info(f'model id cached: {model_cache_id}')
+    else:
+        model_url_bytes=model_url.encode('ascii')
+        model_url_base64_bytes=base64.b64encode(model_url_bytes)
+        model_id=model_url_base64_bytes.decode("ascii")
+        logger.info(f'model id converted: {model_id}')
+
     model_file=f'{model_dir}/{model_id}.zip'
     if not os.path.isfile(model_file):
+        logger.info(f'model downloading: {model_url}')
         urllib.request.urlretrieve(model_url, model_file)
     logger.info(f'model downloaded: {model_file}')
 
     # 모델 압축 풀기
     model_file_extracted_dir=f'{model_dir}/{model_id}'
-    os.makedirs(model_file_extracted_dir, exist_ok=True)
-    with zipfile.ZipFile(model_file, 'r') as zip_ref:
-        zip_ref.extractall(model_file_extracted_dir)
-    logger.info(f'model extracted: {model_file_extracted_dir}')
+    if os.path.isdir(model_file_extracted_dir):
+        logger.info(f'model cache hitted: {model_file_extracted_dir}')
+    else:
+        os.makedirs(model_file_extracted_dir, exist_ok=True)
+        with zipfile.ZipFile(model_file, 'r') as zip_ref:
+            zip_ref.extractall(model_file_extracted_dir)
+        logger.info(f'model extracted: {model_file_extracted_dir}')
 
     # pth 파일 찾기
     model_pth_file=''
@@ -74,8 +83,14 @@ def do_inference(model_url, input_url, pitch):
     # 오디오 다운로드
     input_file_id=uuid.uuid4()
     input_file=f'{input_dir}/{input_file_id}.wav'
-    urllib.request.urlretrieve(input_url, input_file)
-    logger.info(f'input downloaded: {input_file}')
+    if input_content:
+        decoded=base64.b64decode(input_content)
+        with open(input_file, "wb") as f:
+            f.write(decoded)
+        logger.info(f'input file decoded: {model_index_file}')
+    else:
+        urllib.request.urlretrieve(input_url, input_file)
+        logger.info(f'input file downloaded: {input_file}')
 
     # 합성
     output_file_id=uuid.uuid4()
@@ -97,26 +112,6 @@ def do_inference(model_url, input_url, pitch):
     with open(output_file, 'rb') as f:
       contents = f.read()
       return base64.b64encode(contents)
-
-class InferenceRequest(BaseModel):
-    model_url: str
-    input_url: str
-    pitch: Optional[int] = 0
-
-@app.post("/inference")
-def inference(request: InferenceRequest):
-    try:
-        encoded = do_inference(
-            model_url=request.model_url,
-            input_url=request.input_url,
-            pitch=request.pitch
-        )
-        return {"data": encoded}
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f'{e}')
-
 
 sqs = boto3.client('sqs', region_name='ap-northeast-2')
 
@@ -212,3 +207,30 @@ def poll_sqs_messages():
 async def startup_event():
     thread = threading.Thread(target=poll_sqs_messages, daemon=True)
     thread.start()
+
+class InferenceSyncRequest(BaseModel):
+    model_cache_id: str
+    model_url: str
+    input_content: str
+    pitch: Optional[int] = 0
+
+@app.post("/inference/sync")
+def inference(request: InferenceSyncRequest):
+    try:
+        encoded=do_inference(
+            model_cache_id=request.model_cache_id,
+            model_url=request.model_url,
+            input_content=request.input_content,
+            pitch=request.pitch
+        )
+        return {"data": encoded}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'{e}')
+
+@app.post("/inference/test")
+def inference_test():
+    with open('./mock.wav', 'rb') as f:
+      contents = f.read()
+      return {"data": base64.b64encode(contents)}
